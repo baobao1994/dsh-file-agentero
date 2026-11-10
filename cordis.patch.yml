@@ -1,0 +1,8 @@
+# Workspace file quicklook.
+#
+# The Host half is intentionally empty: the built-in document preview already
+# reads workspace files, and this bundle only adds browser-side controls.
+- insert:
+    - id: file-agentero
+      name: dsh-file-agentero
+      config: {}

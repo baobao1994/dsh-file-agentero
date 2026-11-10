@@ -1,0 +1,66 @@
+{
+  "name": "dsh-file-agentero",
+  "version": "0.1.1",
+  "description": "Workspace file quicklook: quote, translate, and copy from the built-in right-side preview, and follow file edits live.",
+  "type": "module",
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "update.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "cordis",
+    "deepseek-harness",
+    "file-preview",
+    "markdown",
+    "pdf",
+    "translation",
+    "workspace"
+  ],
+  "license": "MIT",
+  "author": "baobao1994",
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/baobao1994/dsh-file-agentero.git"
+  },
+  "homepage": "https://github.com/baobao1994/dsh-file-agentero#readme",
+  "bugs": {
+    "url": "https://github.com/baobao1994/dsh-file-agentero/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-sidebar-documentpreview",
+        "@deepseek-ai/dsh-client-ui-sidebar-right",
+        "@deepseek-ai/dsh-client-ui-conversation"
+      ]
+    }
+  }
+}
