@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/baobao1994/dsh-file-agentero/main/docs/icon.png" width="128" height="128" alt="dsh-file-agentero">
+  <img src="https://cdn.jsdelivr.net/gh/baobao1994/dsh-file-agentero@main/docs/icon.png" width="128" height="128" alt="dsh-file-agentero">
 </p>
 
 <h1 align="center">dsh-file-agentero</h1>
