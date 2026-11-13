@@ -1,11 +1,17 @@
 /**
  * Host half of the workspace file quicklook bundle.
  *
- * The only Host capability is a one-shot translation endpoint used by the
- * selection toolbar. It reuses the profile's default model, translates between
- * Simplified Chinese and English only, and never creates a Session message.
+ * Two capabilities live here:
+ *
+ * - A one-shot translation endpoint used by the selection toolbar. It reuses the
+ *   profile's default model, translates between Simplified Chinese and English
+ *   only, and never creates a Session message.
+ * - The media stream: two authenticated Fetch routes that serve one workspace
+ *   video or audio file to the document preview, so the right Sidebar plays it
+ *   instead of handing it to another application.
  */
 import { createUpdater } from './update.js';
+import { createMediaRoutes, MEDIA_STAT_PATH, MEDIA_STREAM_PATH } from './media.js';
 
 export const inject = ['webServer'];
 
@@ -289,4 +295,23 @@ export function apply(ctx) {
       }
     },
   }));
+
+  // Media preview. These routes register on Connection's authenticated Fetch
+  // fence (the same cookie gate as every `/api` route), because a `<video>`
+  // element cannot send the custom header the loopback routes above require.
+  // They are optional on purpose: a composition without the web connection
+  // keeps the translation and update endpoints instead of failing to load.
+  ctx.inject(['connection', 'workspaceFiles', 'sessions', 'sandboxPolicy'], (mediaCtx) => {
+    const routes = createMediaRoutes(mediaCtx);
+    const register = (path, methods, fetch, label) => mediaCtx.effect(() => {
+      const pending = mediaCtx.connection.fetch.register({ path, methods, requestBody: 'buffered', fetch });
+      return () => {
+        void Promise.resolve(pending).then((dispose) => {
+          if (typeof dispose === 'function') dispose();
+        });
+      };
+    }, label);
+    register(MEDIA_STREAM_PATH, ['GET', 'HEAD'], routes.stream, 'file-agentero: media stream route');
+    register(MEDIA_STAT_PATH, ['GET'], routes.stat, 'file-agentero: media stat route');
+  });
 }

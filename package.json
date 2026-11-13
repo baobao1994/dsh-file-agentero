@@ -1,7 +1,7 @@
 {
   "name": "dsh-file-agentero",
-  "version": "0.1.1",
-  "description": "Workspace file quicklook: quote, translate, and copy from the built-in right-side preview, and follow file edits live.",
+  "version": "0.2.1",
+  "description": "Workspace file quicklook: quote, translate and copy from the built-in right-side preview, play video and audio in place, and follow file edits live.",
   "type": "module",
   "main": "./index.js",
   "exports": {
@@ -20,7 +20,9 @@
     "icon.svg",
     "README.md",
     "LICENSE",
-    "CHANGELOG.md"
+    "CHANGELOG.md",
+    "media.js",
+    "THIRD_PARTY_NOTICES.md"
   ],
   "keywords": [
     "dsh",
@@ -31,7 +33,11 @@
     "markdown",
     "pdf",
     "translation",
-    "workspace"
+    "workspace",
+    "video",
+    "audio",
+    "media",
+    "streaming"
   ],
   "license": "MIT",
   "author": "baobao1994",
@@ -62,5 +68,8 @@
         "@deepseek-ai/dsh-client-ui-conversation"
       ]
     }
+  },
+  "scripts": {
+    "test": "node --test test/media.test.mjs"
   }
 }

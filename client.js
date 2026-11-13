@@ -20,7 +20,7 @@ window.__ModuleLoader__.load({
   factory(require) {
     const React = require('react');
     const { createPortal } = require('react-dom');
-    const { useCallback, useEffect, useLayoutEffect, useRef, useState } = React;
+    const { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } = React;
     const h = React.createElement;
 
     const NS = 'file-agentero';
@@ -84,6 +84,19 @@ window.__ModuleLoader__.load({
       repoLink: 'GitHub',
       availableBadge: '可更新',
       selection: '选区操作',
+      mediaTitle: '媒体播放器',
+      mediaLoading: '读取媒体…',
+      mediaBroken: '浏览器无法播放这个文件：编码或封装可能不受支持。',
+      mediaFailed: '无法读取这个媒体文件。',
+      mediaVideo: '视频',
+      mediaAudio: '音频',
+      mediaMutedHint: '自动静音播放 · 点「取消静音」或控制条音量图标开启声音',
+      mediaMute: '静音',
+      mediaUnmute: '取消静音',
+      mediaNoAudio: '这个视频没有音轨：画面可以正常播放，但没有声音可开。需要声音请用带音轨的源文件重新渲染。',
+      mediaUpdated: '文件已更新',
+      mediaReload: '加载新版本',
+      mediaOpenHint: '也可以用预览标题栏的「打开方式」交给本机播放器。',
     };
 
     const en = {
@@ -140,6 +153,19 @@ window.__ModuleLoader__.load({
       repoLink: 'GitHub',
       availableBadge: 'Update available',
       selection: 'Selection actions',
+      mediaTitle: 'Media player',
+      mediaLoading: 'Loading media…',
+      mediaBroken: 'The browser cannot play this file: its codec or container may be unsupported.',
+      mediaFailed: 'Could not read this media file.',
+      mediaVideo: 'Video',
+      mediaAudio: 'Audio',
+      mediaMutedHint: 'Playing muted · use “Unmute” or the volume icon in the player controls',
+      mediaMute: 'Mute',
+      mediaUnmute: 'Unmute',
+      mediaNoAudio: 'This video has no audio track: the picture plays, but there is no sound to unmute. Render it with an audio track for sound.',
+      mediaUpdated: 'The file changed on disk',
+      mediaReload: 'Load the new version',
+      mediaOpenHint: 'You can also hand it to a local player from “Open with” in the preview header.',
     };
 
     /** Localized copy from the current DSH locale, independent of slot `t` binding. */
@@ -355,6 +381,325 @@ window.__ModuleLoader__.load({
         return `${best.root.callId}\u0000${best.name}\u0000${best.content.length}\u0000${best.path}`;
       };
       return state;
+    }
+
+    // ---------------------------------------------------------------------
+    // Media preview: a renderer body for workspace video and audio files.
+    //
+    // The preview hands a renderer-mode body a load request and no bytes, so
+    // this body points a native <video>/<audio> at the Host's authenticated
+    // byte-range route. The browser issues its own Range requests: seeking and
+    // large files cost only the bytes watched, and no complete-file cap applies.
+    // ---------------------------------------------------------------------
+
+    /** Renderer id, also the key the document-body slot registers under. */
+    const MEDIA_BODY_ID = 'dsh-file-agentero/media';
+    /** Document-relative routes: no leading slash, so a deployment prefix survives. */
+    const MEDIA_STREAM_ROUTE = 'api/file-agentero/media';
+    const MEDIA_STAT_ROUTE = 'api/file-agentero/media-stat';
+
+    /** Suffix to the element this body renders; the Host route claims the same set. */
+    const MEDIA_KINDS = {
+      mp4: 'video', m4v: 'video', webm: 'video', webv: 'video', mov: 'video', ogv: 'video',
+      mp3: 'audio', wav: 'audio', m4a: 'audio', aac: 'audio', flac: 'audio',
+      opus: 'audio', oga: 'audio', ogg: 'audio', weba: 'audio',
+    };
+
+    /** Lowercase suffix of a path or file address, without the dot. */
+    function mediaSuffix(value) {
+      const name = String(value ?? '');
+      const tail = name.slice(Math.max(name.lastIndexOf('/'), name.lastIndexOf('\\')) + 1);
+      const dot = tail.lastIndexOf('.');
+      return dot <= 0 ? '' : tail.slice(dot + 1).toLowerCase();
+    }
+
+    /**
+     * The Session and workspace path a `dsh-resource://file/session/…` address
+     * names, or undefined for any other scope.
+     */
+    function sessionAddress(address) {
+      const prefix = 'dsh-resource://file/session/';
+      if (typeof address !== 'string' || !address.startsWith(prefix)) return undefined;
+      const end = address.search(/[?#]/);
+      const parts = address.slice(prefix.length, end === -1 ? undefined : end).split('/');
+      const id = parts[0];
+      const segments = parts.slice(1);
+      if (typeof id !== 'string' || id === '' || segments.length === 0) return undefined;
+      try {
+        return { sessionId: decodeURIComponent(id), path: segments.map(decodeURIComponent).join('/') };
+      } catch {
+        return undefined;
+      }
+    }
+
+    /** Human-readable byte count for the metadata line. */
+    function mediaSizeText(bytes) {
+      if (typeof bytes !== 'number' || !Number.isFinite(bytes) || bytes < 0) return '';
+      if (bytes < 1024) return bytes + ' B';
+      if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+      if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+      return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
+    }
+
+    /** `m:ss` or `h:mm:ss` for a media duration. */
+    function mediaClock(seconds) {
+      if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds < 0) return '';
+      const total = Math.round(seconds);
+      const hours = Math.floor(total / 3600);
+      const minutes = Math.floor((total % 3600) / 60);
+      const rest = total % 60;
+      const mm = hours > 0 ? String(minutes).padStart(2, '0') : String(minutes);
+      return (hours > 0 ? hours + ':' : '') + mm + ':' + String(rest).padStart(2, '0');
+    }
+
+    /**
+     * Present one video or audio file by streaming it from the Host route.
+     *
+     * The body keeps playing while a newer file version exists and offers it
+     * behind a banner, because a source swap interrupts playback and the files
+     * a render pipeline writes change version while they are still being
+     * written. The current position and play state survive the swap.
+     */
+    function MediaBody(props) {
+      const { content, resourceAddress, t } = props;
+      const request = content !== undefined && content.kind === 'renderer' ? content : undefined;
+      const file = useMemo(() => sessionAddress(resourceAddress), [resourceAddress]);
+      const suffix = useMemo(() => mediaSuffix(resourceAddress), [resourceAddress]);
+      const kind = MEDIA_KINDS[suffix];
+      const query = useMemo(
+        () => (file === undefined ? undefined : new URLSearchParams({ sessionId: file.sessionId, path: file.path }).toString()),
+        [file],
+      );
+      const revision = request?.revision;
+      const [meta, setMeta] = useState(undefined);
+      const [sourceVersion, setSourceVersion] = useState(undefined);
+      const [pendingVersion, setPendingVersion] = useState(undefined);
+      const [phase, setPhase] = useState('loading');
+      const [duration, setDuration] = useState(undefined);
+      const [autoplay, setAutoplay] = useState(kind === 'video');
+      const [muted, setMuted] = useState(kind === 'video');
+      const [hasAudio, setHasAudio] = useState(undefined);
+      const mediaRef = useRef(null);
+      const sourceRef = useRef(undefined);
+      const resumeRef = useRef({ time: 0, playing: false });
+
+      // Remember where playback is before a source swap; a paused swap must not
+      // lose the position and a playing swap must resume.
+      const snapshotPlayback = useCallback(() => {
+        const element = mediaRef.current;
+        if (element === null) return;
+        resumeRef.current = { time: element.currentTime, playing: !element.paused && !element.ended };
+      }, []);
+
+      // Mute is set once, imperatively, then left to the element: React's
+      // `muted` prop is a known trap (facebook/react#10389) — a controlled prop
+      // re-applies on the next render and undoes the user's native unmute.
+      const attachMedia = useCallback((element) => {
+        mediaRef.current = element;
+        // A ref callback runs on mount, not on every render, so this primes the
+        // element once per element. A remount (retry after a failure) starts
+        // muted again, which is what autoplay requires.
+        if (element === null || kind !== 'video') return;
+        element.defaultMuted = true;
+        element.muted = true;
+      }, [kind]);
+
+      // Whether the file carries an audio track at all. A silent render is a
+      // normal outcome (Remotion with no audio), and a mute button that cannot
+      // produce sound reads as a broken player, so the two are distinguished.
+      const detectAudio = useCallback((element) => {
+        if (typeof element.captureStream !== 'function') return;
+        try {
+          const stream = element.captureStream();
+          const audio = stream.getAudioTracks().length;
+          for (const track of stream.getTracks()) track.stop();
+          setHasAudio(audio > 0);
+        } catch {
+          // A backend without capture support keeps the old affordance.
+        }
+      }, []);
+
+      const toggleMute = useCallback(() => {
+        const element = mediaRef.current;
+        if (element === null) return;
+        element.muted = !element.muted;
+        // A muted element can still sit at volume 0; unmuting must be audible.
+        if (!element.muted && element.volume === 0) element.volume = 1;
+        setMuted(element.muted);
+      }, []);
+
+      // Metadata: size and version. A new preview revision re-reads it, which is
+      // how a changed file is noticed without polling from this body.
+      useEffect(() => {
+        if (file === undefined || query === undefined) return undefined;
+        const controller = new AbortController();
+        fetch(MEDIA_STAT_ROUTE + '?' + query, { signal: controller.signal, headers: { accept: 'application/json' } })
+          .then((response) => (response.ok ? response.json() : Promise.reject(new Error('stat ' + response.status))))
+          .then((data) => {
+            if (controller.signal.aborted) return;
+            setMeta({ ...data, revision });
+            if (typeof data.version !== 'string' || data.version === '') return;
+            const held = sourceRef.current;
+            if (held === undefined) {
+              sourceRef.current = data.version;
+              setSourceVersion(data.version);
+              return;
+            }
+            if (held === data.version) return;
+            const element = mediaRef.current;
+            if (element !== null && !element.paused && !element.ended) {
+              setPendingVersion(data.version);
+              return;
+            }
+            snapshotPlayback();
+            sourceRef.current = data.version;
+            setSourceVersion(data.version);
+          })
+          .catch(() => {
+            if (controller.signal.aborted) return;
+            setPhase('failed');
+            request?.failed();
+          });
+        return () => controller.abort();
+      }, [file, query, revision]);
+
+      // Tell the preview this revision rendered. Reporting the stat version
+      // rather than the bytes on screen keeps a paused player from being
+      // reloaded under the reader: the banner offers the new version instead.
+      useEffect(() => {
+        // Only a stat taken for this revision may report it: when the preview
+        // reloads, the previous version's metadata is still in state until the
+        // new read lands, and reporting it would mark the new revision loaded.
+        if (request === undefined || meta === undefined || meta.revision !== revision
+          || typeof meta.version !== 'string') return;
+        request.loaded(meta.version);
+      }, [revision, meta]);
+
+      // A failed read or decode is retryable: the preview's reload bumps the
+      // revision, which returns the body to its loading state and remounts the
+      // element against the same (or a newer) version.
+      useEffect(() => {
+        setPhase((current) => (current === 'broken' || current === 'failed' ? 'loading' : current));
+      }, [revision]);
+
+      const applyPending = useCallback(() => {
+        if (pendingVersion === undefined) return;
+        snapshotPlayback();
+        sourceRef.current = pendingVersion;
+        setSourceVersion(pendingVersion);
+        setPendingVersion(undefined);
+      }, [pendingVersion, snapshotPlayback]);
+
+      const onLoadedMetadata = useCallback((event) => {
+        const element = event.currentTarget;
+        setDuration(element.duration);
+        setPhase('ready');
+        if (kind === 'video') detectAudio(element);
+        const resume = resumeRef.current;
+        if (resume.time > 0 && Number.isFinite(element.duration)) {
+          try {
+            element.currentTime = Math.min(resume.time, Math.max(0, element.duration - 0.25));
+          } catch {
+            // Seeking before the new source is seekable fails harmlessly.
+          }
+        }
+        if (resume.playing) void element.play().catch(() => {});
+      }, []);
+
+      const onError = useCallback(() => {
+        setPhase('broken');
+        request?.failed();
+      }, [request]);
+
+      if (file === undefined || query === undefined || kind === undefined) {
+        return h('p', { className: 'fa-media-status', role: 'status' }, t('mediaLoading'));
+      }
+      if (phase === 'failed' || phase === 'broken') {
+        return h('div', { className: 'fa-media-status', role: 'alert' },
+          h('p', { className: 'fa-media-status-line' }, phase === 'failed' ? t('mediaFailed') : t('mediaBroken')),
+          h('p', { className: 'fa-media-status-hint' }, t('mediaOpenHint')),
+        );
+      }
+      if (sourceVersion === undefined) {
+        return h('p', { className: 'fa-media-status', role: 'status' }, t('mediaLoading'));
+      }
+      const src = MEDIA_STREAM_ROUTE + '?' + query + '&v=' + encodeURIComponent(sourceVersion);
+      const tail = resourceAddress.slice(Math.max(resourceAddress.lastIndexOf('/'), resourceAddress.lastIndexOf('\\')) + 1);
+      let name = tail;
+      try {
+        name = decodeURIComponent(tail);
+      } catch {
+        name = tail;
+      }
+      const details = [
+        kind === 'video' ? t('mediaVideo') : t('mediaAudio'),
+        meta?.size ? mediaSizeText(meta.size) : '',
+        mediaClock(duration),
+      ].filter(Boolean).join(' · ');
+      const elementProps = {
+        ref: attachMedia,
+        src,
+        controls: true,
+        playsInline: true,
+        preload: 'metadata',
+        onTimeUpdate: snapshotPlayback,
+        onLoadedMetadata,
+        onError,
+        onPlay: () => setAutoplay(false),
+        onVolumeChange: (event) => setMuted(event.currentTarget.muted),
+      };
+      return h('div', { className: 'fa-media' },
+        h('div', { className: 'fa-media-stage' },
+          kind === 'video'
+            ? h('video', { ...elementProps, className: 'fa-media-player', autoPlay: autoplay })
+            : h('div', { className: 'fa-media-audio-card' },
+              h('div', { className: 'fa-media-audio-title', title: name }, name),
+              h('audio', { ...elementProps, className: 'fa-media-player' })),
+        ),
+        h('div', { className: 'fa-media-meta' },
+          h('span', { className: 'fa-media-name', title: name }, name),
+          h('span', { className: 'fa-media-detail' }, details),
+          kind === 'video' && hasAudio !== false
+            ? h('button', {
+              type: 'button',
+              className: 'fa-media-mute',
+              'aria-pressed': muted ? 'true' : 'false',
+              onClick: toggleMute,
+            }, muted ? t('mediaUnmute') : t('mediaMute'))
+            : null,
+        ),
+        kind === 'video' && hasAudio === false
+          ? h('p', { className: 'fa-media-hint fa-media-hint-silent' }, t('mediaNoAudio'))
+          : null,
+        kind === 'video' && muted && hasAudio !== false
+          ? h('p', { className: 'fa-media-hint' }, t('mediaMutedHint'))
+          : null,
+        pendingVersion !== undefined
+          ? h('div', { className: 'fa-media-banner' },
+            h('span', null, t('mediaUpdated')),
+            h('button', { type: 'button', onClick: applyPending }, t('mediaReload')))
+          : null,
+      );
+    }
+
+    /**
+     * Renderer metadata for the media suffixes.
+     *
+     * `loading: 'renderer'` is the point: the preview reads no bytes for this
+     * implementation, so the 32 MiB complete-file cap never applies and the
+     * player streams through its own route instead.
+     */
+    function mediaDefinition() {
+      const extensions = Object.keys(MEDIA_KINDS);
+      return {
+        id: MEDIA_BODY_ID,
+        extensions,
+        binaryExtensions: extensions,
+        priority: 'extension',
+        title: () => translate('mediaTitle'),
+        loading: 'renderer',
+        wrap: false,
+      };
     }
 
     // ---------------------------------------------------------------------
@@ -751,6 +1096,147 @@ window.__ModuleLoader__.load({
       .fa-set-error {
         color: var(--dsw-alias-state-error-primary, #c0392b);
       }
+      .fa-media {
+        box-sizing: border-box;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        width: 100%;
+        min-height: 100%;
+        padding: 12px;
+      }
+      .fa-media-stage {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 100%;
+      }
+      .fa-media-player {
+        display: block;
+        width: 100%;
+        max-height: 70vh;
+        border-radius: 10px;
+        background: #000;
+        outline: none;
+      }
+      .fa-media-audio-card {
+        box-sizing: border-box;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        width: 100%;
+        padding: 16px;
+        border: 1px solid var(--dsw-alias-border-l1, rgba(127,127,127,.28));
+        border-radius: 12px;
+        background: var(--dsw-alias-bg-layer-2, rgba(127,127,127,.08));
+      }
+      .fa-media-audio-title {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        color: var(--dsw-alias-label-primary, CanvasText);
+        font: 500 13px/1.4 var(--font-sans, system-ui, sans-serif);
+      }
+      .fa-media-audio-card .fa-media-player {
+        max-height: none;
+        background: transparent;
+        border-radius: 8px;
+      }
+      .fa-media-meta {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 0 2px;
+        color: var(--dsw-alias-label-secondary, GrayText);
+        font: 400 12px/1.5 var(--font-mono, ui-monospace, Menlo, monospace);
+      }
+      .fa-media-name {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .fa-media-detail {
+        flex: none;
+        opacity: .8;
+      }
+      .fa-media-mute {
+        appearance: none;
+        flex: none;
+        padding: 2px 9px;
+        border: 1px solid var(--dsw-alias-border-l1, rgba(127,127,127,.28));
+        border-radius: 999px;
+        background: transparent;
+        color: var(--dsw-alias-label-secondary, GrayText);
+        cursor: pointer;
+        font: inherit;
+      }
+      .fa-media-mute:hover {
+        color: var(--dsw-alias-label-primary, CanvasText);
+        background: var(--dsw-alias-bg-layer-2, rgba(127,127,127,.14));
+      }
+      .fa-media-mute:focus-visible {
+        outline: 2px solid var(--dsw-alias-brand-primary, Highlight);
+        outline-offset: 1px;
+      }
+      .fa-media-hint {
+        margin: 0;
+        padding: 0 2px;
+        color: var(--dsw-alias-label-secondary, GrayText);
+        font: 400 12px/1.5 var(--font-sans, system-ui, sans-serif);
+      }
+      .fa-media-hint-silent {
+        color: var(--dsw-alias-label-primary, CanvasText);
+        opacity: .85;
+      }
+      .fa-media-banner {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 6px 10px;
+        border: 1px solid var(--dsw-alias-border-l1, rgba(127,127,127,.28));
+        border-radius: 8px;
+        background: var(--dsw-alias-bg-layer-2, rgba(127,127,127,.1));
+        color: var(--dsw-alias-label-secondary, GrayText);
+        font: 400 12px/1.5 var(--font-sans, system-ui, sans-serif);
+      }
+      .fa-media-banner button {
+        appearance: none;
+        margin-left: auto;
+        padding: 3px 10px;
+        border: 1px solid var(--dsw-alias-border-l1, rgba(127,127,127,.28));
+        border-radius: 999px;
+        background: transparent;
+        color: var(--dsw-alias-brand-primary, Highlight);
+        cursor: pointer;
+        font: inherit;
+      }
+      .fa-media-banner button:hover {
+        background: var(--dsw-alias-bg-overlay, Canvas);
+      }
+      .fa-media-status {
+        box-sizing: border-box;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+        min-height: 100%;
+        margin: 0;
+        padding: 24px 18px;
+        text-align: center;
+        color: var(--dsw-alias-label-secondary, GrayText);
+        font: 400 13px/1.6 var(--font-sans, system-ui, sans-serif);
+      }
+      .fa-media-status-line {
+        margin: 0;
+        color: var(--dsw-alias-label-primary, CanvasText);
+      }
+      .fa-media-status-hint {
+        margin: 0;
+        font-size: 12px;
+        opacity: .85;
+      }
     `;
 
     function installStyles() {
@@ -773,7 +1259,7 @@ window.__ModuleLoader__.load({
 
     function createPreviewTools(ctx) {
       return function PreviewTools(props) {
-        const { inputActions } = props;
+        const { inputActions } = props ?? {};
         const tr = useCallback(translate, []);
         const [follow, toggleFollow] = useFollow();
         const rootRef = useRef(null);
@@ -805,7 +1291,16 @@ window.__ModuleLoader__.load({
 
         useLayoutEffect(() => {
           const element = rootRef.current;
-          panelRef.current = element === null ? null : element.closest('[data-sidebar-right-panel]');
+          // DSH 0.2.2 起右侧预览挂在 dockkit 面板里，不再有 [data-sidebar-right-panel]
+          // 这一层包裹，于是这里拿到 null，下面的 selectionchange 监听根本不注册，
+          // 划词工具条永远不浮出。按由近到远依次兜底。
+          panelRef.current = element === null
+            ? null
+            : (element.closest('[data-sidebar-right-panel]')
+              ?? element.closest('[data-dockkit-pane]')
+              ?? element.closest('[data-dockkit-surface]')
+              ?? element.closest('[data-dockkit-float]')
+              ?? element.parentElement);
         }, []);
 
         useEffect(() => {
@@ -936,7 +1431,7 @@ window.__ModuleLoader__.load({
           }
         }, [copy, flash, inputActions, remember, tr]);
 
-        const translate = useCallback((text, anchorOverride) => {
+        const runTranslate = useCallback((text, anchorOverride) => {
           const expected = translationTarget(text);
           const anchor = anchorOverride ?? targetRef.current ?? {
             x: window.innerWidth / 2,
@@ -1098,7 +1593,7 @@ window.__ModuleLoader__.load({
                   'button',
                   {
                     type: 'button',
-                    onClick: () => translate(target.text),
+                    onClick: () => runTranslate(target.text),
                   },
                   tr('translate'),
                 ),
@@ -1164,7 +1659,7 @@ window.__ModuleLoader__.load({
                       card.error !== ''
                         ? h(
                             'button',
-                            { type: 'button', onClick: () => translate(card.source, card.anchor) },
+                            { type: 'button', onClick: () => runTranslate(card.source, card.anchor) },
                             tr('retry'),
                           )
                         : null,
@@ -1705,6 +2200,24 @@ window.__ModuleLoader__.load({
             createLiveDraft(),
           ),
         ));
+
+        // Media renderers come last, and behind an optional dependency: a
+        // preview package without the renderer registry (or a headless surface)
+        // must still get the settings, update and follow-edits contributions
+        // above rather than failing to load the whole bundle.
+        ctx.inject(['documentPreviews'], (mediaCtx) => {
+          mediaCtx.effect(() => mediaCtx.documentPreviews.register(mediaDefinition()), 'file-agentero: media renderer');
+          mediaCtx.effect(() => mediaCtx.slots.inject('sidebar.right.tab.document', () =>
+            mediaCtx.slots.register(
+              {
+                name: 'sidebar.right.tab.document',
+                key: MEDIA_BODY_ID,
+                locale: NS,
+              },
+              MediaBody,
+            ),
+          ), 'file-agentero: media body');
+        });
       },
     };
   },
