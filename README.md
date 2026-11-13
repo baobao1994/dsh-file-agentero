@@ -20,10 +20,6 @@
   <code>dsh plugin --profile desktop add dsh-file-agentero</code>
 </p>
 
-<p align="center">
-  与 <code>@poco-ai/agentero-dsh</code> 并存：agentero 继续负责 Vault 里的论文库，本插件负责工作区文件。
-</p>
-
 ## 它能做什么
 
 DSH 自带的右侧文档预览已经能打开工作区文件（Markdown、代码、PDF、Word/PPT、Excel/CSV、图片），并且会监听文件变化自动刷新。本插件补三块交互：
